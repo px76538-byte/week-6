@@ -1,0 +1,138 @@
+#include <iostream>
+#include <cmath>
+#include <string>
+using namespace std;
+
+// Abstract base class
+class Shape {
+public:
+    virtual double getArea() const = 0;
+    virtual double getPerimeter() const = 0;
+    virtual string getName() const = 0;
+
+    virtual ~Shape() {}
+};
+
+// Circle class
+class Circle : public Shape {
+private:
+    double radius;
+
+public:
+    Circle(double r) {
+        radius = r;
+    }
+
+    double getArea() const override {
+        return M_PI * radius * radius;
+    }
+
+    double getPerimeter() const override {
+        return 2 * M_PI * radius;
+    }
+
+    string getName() const override {
+        return "Circle";
+    }
+};
+
+// Rectangle class
+class Rectangle : public Shape {
+protected:
+    double length;
+    double width;
+
+public:
+    Rectangle(double l, double w) {
+        length = l;
+        width = w;
+    }
+
+    double getArea() const override {
+        return length * width;
+    }
+
+    double getPerimeter() const override {
+        return 2 * (length + width);
+    }
+
+    string getName() const override {
+        return "Rectangle";
+    }
+};
+
+// Square class inherits from Rectangle
+class Square : public Rectangle {
+public:
+    Square(double side) : Rectangle(side, side) {}
+
+    string getName() const override {
+        return "Square";
+    }
+};
+
+// RightTriangle class
+class RightTriangle : public Shape {
+protected:
+    double base;
+    double height;
+
+public:
+    RightTriangle(double b, double h) {
+        base = b;
+        height = h;
+    }
+
+    double getArea() const override {
+        return 0.5 * base * height;
+    }
+
+    double getPerimeter() const override {
+        double hypotenuse = sqrt(base * base + height * height);
+        return base + height + hypotenuse;
+    }
+
+    string getName() const override {
+        return "Right Triangle";
+    }
+};
+
+// IsoscelesRightTriangle inherits from RightTriangle
+class IsoscelesRightTriangle : public RightTriangle {
+public:
+    IsoscelesRightTriangle(double side) : RightTriangle(side, side) {}
+
+    string getName() const override {
+        return "Isosceles Right Triangle";
+    }
+};
+
+// Function that prints the shape name and area
+void printAreaToScreen(Shape *s) {
+    cout << "The area of the " << s->getName()
+         << " is " << s->getArea() << "." << endl;
+}
+
+int main() {
+    Circle circle(5);
+    Rectangle rectangle(4, 6);
+    Square square(4);
+    RightTriangle triangle(3, 4);
+    IsoscelesRightTriangle isoTriangle(5);
+
+    printAreaToScreen(&circle);
+    printAreaToScreen(&rectangle);
+    printAreaToScreen(&square);
+    printAreaToScreen(&triangle);
+    printAreaToScreen(&isoTriangle);
+
+    cout << endl;
+
+    cout << circle.getName() << " perimeter: " << circle.getPerimeter() << endl;
+    cout << rectangle.getName() << " perimeter: " << rectangle.getPerimeter() << endl;
+    cout << square.getName() << " perimeter: " << square.getPerimeter() << endl;
+    cout << triangle.getName() << " perimeter: " << triangle.getPerimeter() << endl;
+    cout << isoTriangle.getName() << " perimeter: " << isoTriangle.getPerimeter() << endl;
+
+    return 0;
+}
