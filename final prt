@@ -1,0 +1,1072 @@
+#include <cctype>
+#include <iostream>
+#include <memory>
+#include <sstream>
+#include <stdexcept>
+#include <string>
+#include <vector>
+
+using namespace std;
+
+// ------------------------------------------------------------
+// Basic types
+// ------------------------------------------------------------
+
+struct Position {
+    int row = 0;
+    int col = 0;
+};
+
+bool operator==(const Position& left, const Position& right) {
+    return left.row == right.row && left.col == right.col;
+}
+
+bool operator!=(const Position& left, const Position& right) {
+    return !(left == right);
+}
+
+enum class Direction {
+    Up,
+    Right,
+    Down,
+    Left
+};
+
+enum class MoveResult {
+    Moved,
+    Blocked,
+    Caught
+};
+
+char directionSymbol(Direction direction) {
+    switch (direction) {
+        case Direction::Up:    return '^';
+        case Direction::Right: return '>';
+        case Direction::Down:  return 'v';
+        case Direction::Left:  return '<';
+    }
+
+    return '?';
+}
+
+string directionName(Direction direction) {
+    switch (direction) {
+        case Direction::Up:    return "up";
+        case Direction::Right: return "right";
+        case Direction::Down:  return "down";
+        case Direction::Left:  return "left";
+    }
+
+    return "unknown";
+}
+
+Direction oppositeDirection(Direction direction) {
+    switch (direction) {
+        case Direction::Up:    return Direction::Down;
+        case Direction::Right: return Direction::Left;
+        case Direction::Down:  return Direction::Up;
+        case Direction::Left:  return Direction::Right;
+    }
+
+    return Direction::Up;
+}
+
+Direction turnClockwise(Direction direction) {
+    switch (direction) {
+        case Direction::Up:    return Direction::Right;
+        case Direction::Right: return Direction::Down;
+        case Direction::Down:  return Direction::Left;
+        case Direction::Left:  return Direction::Up;
+    }
+
+    return Direction::Up;
+}
+
+Position nextPosition(Position current, Direction direction) {
+    switch (direction) {
+        case Direction::Up:    current.row--; break;
+        case Direction::Right: current.col++; break;
+        case Direction::Down:  current.row++; break;
+        case Direction::Left:  current.col--; break;
+    }
+
+    return current;
+}
+
+// ------------------------------------------------------------
+// Guard hierarchy: runtime polymorphism is used so each guard
+// type can respond differently when it encounters an obstacle.
+// ------------------------------------------------------------
+
+class Guard {
+private:
+    Position position;
+    Direction direction;
+
+protected:
+    void setDirection(Direction newDirection) {
+        direction = newDirection;
+    }
+
+public:
+    Guard(Position startPosition, Direction startDirection)
+        : position(startPosition), direction(startDirection) {
+    }
+
+    virtual ~Guard() = default;
+
+    Position getPosition() const {
+        return position;
+    }
+
+    void setPosition(Position newPosition) {
+        position = newPosition;
+    }
+
+    Direction getDirection() const {
+        return direction;
+    }
+
+    virtual void turnWhenBlocked() = 0;
+    virtual bool movesAfterTurning() const = 0;
+    virtual string typeName() const = 0;
+    virtual string blockedBehavior() const = 0;
+    virtual unique_ptr<Guard> clone() const = 0;
+};
+
+class LineGuard : public Guard {
+public:
+    LineGuard(Position startPosition, Direction startDirection)
+        : Guard(startPosition, startDirection) {
+    }
+
+    void turnWhenBlocked() override {
+        setDirection(oppositeDirection(getDirection()));
+    }
+
+    bool movesAfterTurning() const override {
+        return false;
+    }
+
+    string typeName() const override {
+        return "normal line guard";
+    }
+
+    string blockedBehavior() const override {
+        return "reverses direction and waits until its next turn";
+    }
+
+    unique_ptr<Guard> clone() const override {
+        return make_unique<LineGuard>(*this);
+    }
+};
+
+class PatrolGuard : public Guard {
+public:
+    PatrolGuard(Position startPosition, Direction startDirection)
+        : Guard(startPosition, startDirection) {
+    }
+
+    void turnWhenBlocked() override {
+        setDirection(turnClockwise(getDirection()));
+    }
+
+    bool movesAfterTurning() const override {
+        return true;
+    }
+
+    string typeName() const override {
+        return "patrolling guard";
+    }
+
+    string blockedBehavior() const override {
+        return "turns clockwise and moves if the new tile is open";
+    }
+
+    unique_ptr<Guard> clone() const override {
+        return make_unique<PatrolGuard>(*this);
+    }
+};
+
+// ------------------------------------------------------------
+// Level objects
+// ------------------------------------------------------------
+
+struct Door {
+    Position position;
+    char group = 'A';
+    bool open = false;
+};
+
+struct SwitchTile {
+    Position position;
+    char group = 'A';
+};
+
+struct Level {
+    string name;
+    vector<string> map;
+    Position player;
+    Position goal;
+    vector<unique_ptr<Guard>> guards;
+    vector<Door> doors;
+    vector<SwitchTile> switches;
+
+    Level() = default;
+
+    // Deep copy is needed because unique_ptr cannot be copied normally.
+    // clone() gives every copied level its own independent guards.
+    Level(const Level& other)
+        : name(other.name),
+          map(other.map),
+          player(other.player),
+          goal(other.goal),
+          doors(other.doors),
+          switches(other.switches) {
+        for (const auto& guard : other.guards) {
+            guards.push_back(guard->clone());
+        }
+    }
+
+    Level& operator=(const Level& other) {
+        if (this == &other) {
+            return *this;
+        }
+
+        name = other.name;
+        map = other.map;
+        player = other.player;
+        goal = other.goal;
+        doors = other.doors;
+        switches = other.switches;
+
+        guards.clear();
+        for (const auto& guard : other.guards) {
+            guards.push_back(guard->clone());
+        }
+
+        return *this;
+    }
+
+    Level(Level&&) noexcept = default;
+    Level& operator=(Level&&) noexcept = default;
+};
+
+// ------------------------------------------------------------
+// Input helpers
+// ------------------------------------------------------------
+
+string trim(const string& text) {
+    size_t first = 0;
+    while (first < text.size() &&
+           isspace(static_cast<unsigned char>(text[first]))) {
+        first++;
+    }
+
+    size_t last = text.size();
+    while (last > first &&
+           isspace(static_cast<unsigned char>(text[last - 1]))) {
+        last--;
+    }
+
+    return text.substr(first, last - first);
+}
+
+string toLower(string text) {
+    for (char& character : text) {
+        character = static_cast<char>(
+            tolower(static_cast<unsigned char>(character))
+        );
+    }
+
+    return text;
+}
+
+bool parseStrictInt(const string& text, int& value) {
+    stringstream input(text);
+    input >> value;
+
+    if (input.fail()) {
+        return false;
+    }
+
+    input >> ws;
+    return input.eof();
+}
+
+bool parseTwoStrictInts(const string& text, int& first, int& second) {
+    stringstream input(text);
+    input >> first >> second;
+
+    if (input.fail()) {
+        return false;
+    }
+
+    input >> ws;
+    return input.eof();
+}
+
+bool readLine(const string& prompt, string& result) {
+    cout << prompt;
+    return static_cast<bool>(getline(cin, result));
+}
+
+bool promptForInteger(const string& prompt, int& value) {
+    while (true) {
+        string input;
+        if (!readLine(prompt, input)) {
+            return false;
+        }
+
+        if (parseStrictInt(trim(input), value)) {
+            return true;
+        }
+
+        cout << "Please enter one whole number.\n";
+    }
+}
+
+// ------------------------------------------------------------
+// Searching and collision helpers
+// ------------------------------------------------------------
+
+bool inBounds(const Level& level, Position position) {
+    return position.row >= 0 &&
+           position.row < static_cast<int>(level.map.size()) &&
+           position.col >= 0 &&
+           position.col < static_cast<int>(level.map[position.row].size());
+}
+
+int findDoor(const Level& level, Position position) {
+    for (int index = 0;
+         index < static_cast<int>(level.doors.size());
+         index++) {
+        if (level.doors[index].position == position) {
+            return index;
+        }
+    }
+
+    return -1;
+}
+
+int findSwitch(const Level& level, Position position) {
+    for (int index = 0;
+         index < static_cast<int>(level.switches.size());
+         index++) {
+        if (level.switches[index].position == position) {
+            return index;
+        }
+    }
+
+    return -1;
+}
+
+int findGuard(const Level& level, Position position) {
+    for (int index = 0;
+         index < static_cast<int>(level.guards.size());
+         index++) {
+        if (level.guards[index]->getPosition() == position) {
+            return index;
+        }
+    }
+
+    return -1;
+}
+
+bool closedDoorAt(const Level& level, Position position) {
+    int doorIndex = findDoor(level, position);
+    return doorIndex != -1 && !level.doors[doorIndex].open;
+}
+
+bool blocksMovement(const Level& level, Position position) {
+    if (!inBounds(level, position)) {
+        return true;
+    }
+
+    if (level.map[position.row][position.col] == '#') {
+        return true;
+    }
+
+    return closedDoorAt(level, position);
+}
+
+bool guardTileBlocked(const Level& level,
+                      Position position,
+                      int movingGuardIndex) {
+    if (blocksMovement(level, position)) {
+        return true;
+    }
+
+    for (int index = 0;
+         index < static_cast<int>(level.guards.size());
+         index++) {
+        if (index != movingGuardIndex &&
+            level.guards[index]->getPosition() == position) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool blocksVision(const Level& level, Position position) {
+    if (!inBounds(level, position)) {
+        return true;
+    }
+
+    if (level.map[position.row][position.col] == '#') {
+        return true;
+    }
+
+    return closedDoorAt(level, position);
+}
+
+// ------------------------------------------------------------
+// Doors and switches
+// ------------------------------------------------------------
+
+void toggleDoors(Level& level, char group) {
+    bool foundDoor = false;
+    bool nowOpen = false;
+
+    for (Door& door : level.doors) {
+        if (door.group == group) {
+            door.open = !door.open;
+            nowOpen = door.open;
+            foundDoor = true;
+        }
+    }
+
+    if (foundDoor) {
+        cout << "Switch " << static_cast<char>(tolower(group))
+             << " changed door group " << group << " to "
+             << (nowOpen ? "open" : "closed") << ".\n";
+    }
+}
+
+void activateSwitchAt(Level& level, Position position) {
+    int switchIndex = findSwitch(level, position);
+
+    if (switchIndex != -1) {
+        toggleDoors(level, level.switches[switchIndex].group);
+    }
+}
+
+// ------------------------------------------------------------
+// Level creation
+// ------------------------------------------------------------
+
+void addLineGuard(Level& level,
+                  int row,
+                  int col,
+                  Direction direction) {
+    level.guards.push_back(
+        make_unique<LineGuard>(Position{row, col}, direction)
+    );
+}
+
+void addPatrolGuard(Level& level,
+                    int row,
+                    int col,
+                    Direction direction) {
+    level.guards.push_back(
+        make_unique<PatrolGuard>(Position{row, col}, direction)
+    );
+}
+
+void validateMapShape(const vector<string>& map) {
+    if (map.empty() || map[0].empty()) {
+        throw runtime_error("A level map cannot be empty.");
+    }
+
+    const size_t width = map[0].size();
+    for (const string& row : map) {
+        if (row.size() != width) {
+            throw runtime_error("Every row in a level must have the same width.");
+        }
+    }
+}
+
+void extractMapObjects(Level& level) {
+    int playerCount = 0;
+    int goalCount = 0;
+
+    level.guards.clear();
+    level.doors.clear();
+    level.switches.clear();
+
+    for (int row = 0; row < static_cast<int>(level.map.size()); row++) {
+        for (int col = 0;
+             col < static_cast<int>(level.map[row].size());
+             col++) {
+            char tile = level.map[row][col];
+            Position position{row, col};
+
+            if (tile == '@') {
+                level.player = position;
+                level.map[row][col] = '.';
+                playerCount++;
+            }
+            else if (tile == '$') {
+                level.goal = position;
+                level.map[row][col] = '.';
+                goalCount++;
+            }
+            else if (tile == '<') {
+                addLineGuard(level, row, col, Direction::Left);
+                level.map[row][col] = '.';
+            }
+            else if (tile == '>') {
+                addLineGuard(level, row, col, Direction::Right);
+                level.map[row][col] = '.';
+            }
+            else if (tile == '^') {
+                addLineGuard(level, row, col, Direction::Up);
+                level.map[row][col] = '.';
+            }
+            else if (tile == 'v') {
+                addLineGuard(level, row, col, Direction::Down);
+                level.map[row][col] = '.';
+            }
+            else if (tile >= 'A' && tile <= 'Z') {
+                level.doors.push_back(Door{position, tile, false});
+                level.map[row][col] = '.';
+            }
+            else if (tile >= 'a' && tile <= 'z') {
+                char group = static_cast<char>(
+                    toupper(static_cast<unsigned char>(tile))
+                );
+                level.switches.push_back(SwitchTile{position, group});
+                level.map[row][col] = '.';
+            }
+        }
+    }
+
+    if (playerCount != 1 || goalCount != 1) {
+        throw runtime_error(
+            "Every level must contain exactly one @ player and one $ goal."
+        );
+    }
+}
+
+Level makeLevel(const string& name, const vector<string>& originalMap) {
+    validateMapShape(originalMap);
+
+    Level level;
+    level.name = name;
+    level.map = originalMap;
+    extractMapObjects(level);
+    return level;
+}
+
+vector<Level> makeLevels() {
+    vector<Level> levels;
+
+    Level level1 = makeLevel("A New Enemy - Multiple Door Groups", {
+        "#########################",
+        "#@....a.....A.....b...$.#",
+        "#..#####...###...#####..#",
+        "#...........B...........#",
+        "#..#####.........#####..#",
+        "#...........<...........#",
+        "#########################"
+    });
+    levels.push_back(move(level1));
+
+    Level level2 = makeLevel("The Truth of the Weapon - Rectangle Patrol", {
+        "####################",
+        "#@...............$.#",
+        "#..#############...#",
+        "#..#...........#...#",
+        "#..#...........#...#",
+        "#..#...........#...#",
+        "#..#############...#",
+        "#..................#",
+        "####################"
+    });
+    addPatrolGuard(level2, 3, 4, Direction::Right);
+    levels.push_back(move(level2));
+
+    Level level3 = makeLevel("Silent Maze - Complex Patrol Pattern", {
+        "###########################",
+        "#@.......................$#",
+        "#..#########..#########...#",
+        "#..#.......#..#.......#...#",
+        "#..#..###..#..#..###..#...#",
+        "#..#.......#..........#...#",
+        "#..#########..#########...#",
+        "#.........................#",
+        "###########################"
+    });
+    addPatrolGuard(level3, 7, 3, Direction::Right);
+    levels.push_back(move(level3));
+
+    Level level4 = makeLevel("Switch Trap - Guard Opens the Door", {
+        "#########################",
+        "#@..........C.........$.#",
+        "#..#################....#",
+        "#........c..............#",
+        "#.......................#",
+        "#########################"
+    });
+    addLineGuard(level4, 3, 19, Direction::Left);
+    levels.push_back(move(level4));
+
+    return levels;
+}
+
+// ------------------------------------------------------------
+// Display and inspection
+// ------------------------------------------------------------
+
+char displayTile(const Level& level, Position position) {
+    if (level.player == position) {
+        return '@';
+    }
+
+    int guardIndex = findGuard(level, position);
+    if (guardIndex != -1) {
+        return directionSymbol(level.guards[guardIndex]->getDirection());
+    }
+
+    int doorIndex = findDoor(level, position);
+    if (doorIndex != -1) {
+        if (level.doors[doorIndex].open) {
+            return '/';
+        }
+        return level.doors[doorIndex].group;
+    }
+
+    int switchIndex = findSwitch(level, position);
+    if (switchIndex != -1) {
+        return static_cast<char>(
+            tolower(static_cast<unsigned char>(
+                level.switches[switchIndex].group
+            ))
+        );
+    }
+
+    if (level.goal == position) {
+        return '$';
+    }
+
+    return level.map[position.row][position.col];
+}
+
+void printMap(const Level& level) {
+    cout << "\n" << level.name << "\n";
+    cout << "Move: W/A/S/D   Inspect: inspect ROW COLUMN   Quit: Q\n\n";
+
+    cout << "   ";
+    for (int col = 0; col < static_cast<int>(level.map[0].size()); col++) {
+        cout << col % 10;
+    }
+    cout << '\n';
+
+    for (int row = 0; row < static_cast<int>(level.map.size()); row++) {
+        if (row < 10) {
+            cout << ' ';
+        }
+        cout << row << ' ';
+
+        for (int col = 0;
+             col < static_cast<int>(level.map[row].size());
+             col++) {
+            cout << displayTile(level, Position{row, col});
+        }
+        cout << '\n';
+    }
+
+    cout << "\nLegend: @ player, # wall, $ goal, < > ^ v normal guard,\n"
+         << "        A-Z closed door groups, a-z switches, / open door\n";
+}
+
+void inspectTile(const Level& level, Position position) {
+    cout << "\nInspecting row " << position.row
+         << ", column " << position.col << ":\n";
+
+    if (!inBounds(level, position)) {
+        cout << "That position is outside the level.\n";
+        return;
+    }
+
+    if (level.player == position) {
+        cout << "Player: You are standing on this tile.\n";
+        return;
+    }
+
+    int guardIndex = findGuard(level, position);
+    if (guardIndex != -1) {
+        const Guard& guard = *level.guards[guardIndex];
+        cout << "Guard: This is a " << guard.typeName() << ".\n";
+        cout << "It is facing " << directionName(guard.getDirection()) << ".\n";
+        cout << "When blocked, it " << guard.blockedBehavior() << ".\n";
+
+        Position forward = nextPosition(
+            guard.getPosition(),
+            guard.getDirection()
+        );
+
+        if (guardTileBlocked(level, forward, guardIndex)) {
+            cout << "The tile directly in front of it is currently blocked.\n";
+
+            if (guard.movesAfterTurning()) {
+                Direction turned = turnClockwise(guard.getDirection());
+                Position afterTurn = nextPosition(guard.getPosition(), turned);
+
+                if (guardTileBlocked(level, afterTurn, guardIndex)) {
+                    cout << "The tile after its clockwise turn is also blocked, "
+                         << "so it will remain in place.\n";
+                }
+                else {
+                    cout << "After turning, it can move to row "
+                         << afterTurn.row << ", column " << afterTurn.col
+                         << ".\n";
+                }
+            }
+        }
+        else {
+            cout << "Its next move is toward row " << forward.row
+                 << ", column " << forward.col << ".\n";
+        }
+
+        return;
+    }
+
+    int doorIndex = findDoor(level, position);
+    if (doorIndex != -1) {
+        const Door& door = level.doors[doorIndex];
+        cout << "Door: Group " << door.group << ". It is "
+             << (door.open ? "open" : "closed") << ".\n";
+
+        if (door.open) {
+            cout << "Players, guards, and guard vision can pass through it.\n";
+        }
+        else {
+            cout << "It blocks players, guards, and guard vision.\n";
+        }
+        return;
+    }
+
+    int switchIndex = findSwitch(level, position);
+    if (switchIndex != -1) {
+        const SwitchTile& switchTile = level.switches[switchIndex];
+        cout << "Switch: This controls door group "
+             << switchTile.group << ".\n";
+        cout << "A player or guard stepping on it toggles that door group.\n";
+        return;
+    }
+
+    if (level.goal == position) {
+        cout << "Goal: Reach this tile to complete the level.\n";
+        return;
+    }
+
+    if (level.map[position.row][position.col] == '#') {
+        cout << "Wall: It blocks movement and guard vision.\n";
+        return;
+    }
+
+    cout << "Empty floor tile.\n";
+}
+
+bool handleInspectCommand(const Level& level, const string& command) {
+    stringstream commandStream(command);
+    string word;
+    commandStream >> word;
+
+    string remainingText;
+    getline(commandStream, remainingText);
+    remainingText = trim(remainingText);
+
+    Position position;
+
+    if (remainingText.empty()) {
+        if (!promptForInteger("Enter row: ", position.row)) {
+            return false;
+        }
+        if (!promptForInteger("Enter column: ", position.col)) {
+            return false;
+        }
+    }
+    else if (!parseTwoStrictInts(
+                 remainingText,
+                 position.row,
+                 position.col)) {
+        cout << "Invalid inspect command. Use: inspect ROW COLUMN\n";
+        cout << "Example: inspect 3 7\n";
+        return true;
+    }
+
+    inspectTile(level, position);
+    cout << "Inspection does not use a turn.\n";
+    return true;
+}
+
+// ------------------------------------------------------------
+// Guard vision and movement
+// ------------------------------------------------------------
+
+bool guardSeesPlayer(const Level& level, int guardIndex) {
+    const Guard& guard = *level.guards[guardIndex];
+    Position check = nextPosition(
+        guard.getPosition(),
+        guard.getDirection()
+    );
+
+    while (inBounds(level, check)) {
+        if (blocksVision(level, check)) {
+            return false;
+        }
+
+        if (level.player == check) {
+            return true;
+        }
+
+        // A guard standing between another guard and the player blocks sight.
+        if (findGuard(level, check) != -1) {
+            return false;
+        }
+
+        check = nextPosition(check, guard.getDirection());
+    }
+
+    return false;
+}
+
+bool anyGuardSeesPlayer(const Level& level) {
+    for (int index = 0;
+         index < static_cast<int>(level.guards.size());
+         index++) {
+        if (guardSeesPlayer(level, index)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool moveGuardTo(Level& level, int guardIndex, Position destination) {
+    level.guards[guardIndex]->setPosition(destination);
+    activateSwitchAt(level, destination);
+
+    if (destination == level.player) {
+        cout << "A guard moved onto your tile.\n";
+        return true;
+    }
+
+    return false;
+}
+
+bool moveGuards(Level& level) {
+    for (int index = 0;
+         index < static_cast<int>(level.guards.size());
+         index++) {
+        Guard& guard = *level.guards[index];
+        Position destination = nextPosition(
+            guard.getPosition(),
+            guard.getDirection()
+        );
+
+        if (!guardTileBlocked(level, destination, index)) {
+            if (moveGuardTo(level, index, destination)) {
+                return true;
+            }
+            continue;
+        }
+
+        guard.turnWhenBlocked();
+
+        if (!guard.movesAfterTurning()) {
+            continue;
+        }
+
+        // A patrol guard turns clockwise and tries to move during this turn.
+        destination = nextPosition(
+            guard.getPosition(),
+            guard.getDirection()
+        );
+
+        if (!guardTileBlocked(level, destination, index)) {
+            if (moveGuardTo(level, index, destination)) {
+                return true;
+            }
+        }
+    }
+
+    return false;
+}
+
+MoveResult movePlayer(Level& level, Direction direction) {
+    Position destination = nextPosition(level.player, direction);
+
+    if (blocksMovement(level, destination)) {
+        cout << "You cannot move there. A wall or closed door is blocking you.\n";
+        return MoveResult::Blocked;
+    }
+
+    if (findGuard(level, destination) != -1) {
+        cout << "You walked into a guard.\n";
+        return MoveResult::Caught;
+    }
+
+    level.player = destination;
+    activateSwitchAt(level, destination);
+    return MoveResult::Moved;
+}
+
+bool commandToDirection(const string& command, Direction& direction) {
+    if (command == "w" || command == "up") {
+        direction = Direction::Up;
+        return true;
+    }
+    if (command == "d" || command == "right") {
+        direction = Direction::Right;
+        return true;
+    }
+    if (command == "s" || command == "down") {
+        direction = Direction::Down;
+        return true;
+    }
+    if (command == "a" || command == "left") {
+        direction = Direction::Left;
+        return true;
+    }
+
+    return false;
+}
+
+// ------------------------------------------------------------
+// Game loop
+// ------------------------------------------------------------
+
+void playLevel(const Level& originalLevel) {
+    // A deep copy resets the level every time it is selected.
+    Level level(originalLevel);
+
+    while (true) {
+        printMap(level);
+
+        // This also checks whether the starting position is visible.
+        if (anyGuardSeesPlayer(level)) {
+            cout << "A guard spotted you. Game over.\n";
+            return;
+        }
+
+        string command;
+        if (!readLine("Command: ", command)) {
+            cout << "\nInput ended. Leaving the game.\n";
+            return;
+        }
+
+        command = toLower(trim(command));
+
+        if (command == "q" || command == "quit") {
+            cout << "Leaving this level.\n";
+            return;
+        }
+
+        bool isInspect =
+            command == "i" ||
+            command == "inspect" ||
+            command.rfind("i ", 0) == 0 ||
+            command.rfind("inspect ", 0) == 0;
+
+        if (isInspect) {
+            if (!handleInspectCommand(level, command)) {
+                cout << "\nInput ended. Leaving the game.\n";
+                return;
+            }
+            continue;
+        }
+
+        Direction direction;
+        if (!commandToDirection(command, direction)) {
+            cout << "Invalid command. Use W, A, S, D, inspect, or quit.\n";
+            continue;
+        }
+
+        MoveResult result = movePlayer(level, direction);
+
+        if (result == MoveResult::Blocked) {
+            // A blocked movement does not use the player's turn.
+            continue;
+        }
+
+        if (result == MoveResult::Caught) {
+            cout << "Game over.\n";
+            return;
+        }
+
+        if (level.player == level.goal) {
+            printMap(level);
+            cout << "You reached the goal. You win!\n";
+            return;
+        }
+
+        // Vision is checked immediately after the player moves.
+        if (anyGuardSeesPlayer(level)) {
+            cout << "A guard spotted you. Game over.\n";
+            return;
+        }
+
+        if (moveGuards(level)) {
+            cout << "Game over.\n";
+            return;
+        }
+
+        // Vision is checked again after all guards move.
+        if (anyGuardSeesPlayer(level)) {
+            cout << "A guard spotted you. Game over.\n";
+            return;
+        }
+    }
+}
+
+int main() {
+    try {
+        vector<Level> levels = makeLevels();
+
+        cout << "Ultimate Spy - Portfolio 2\n";
+
+        while (true) {
+            cout << "\nChoose a level:\n";
+            for (int index = 0;
+                 index < static_cast<int>(levels.size());
+                 index++) {
+                cout << index + 1 << ". " << levels[index].name << '\n';
+            }
+            cout << "0. Quit\n";
+
+            string input;
+            if (!readLine("Choice: ", input)) {
+                cout << "\nGoodbye.\n";
+                break;
+            }
+
+            int choice;
+            if (!parseStrictInt(trim(input), choice)) {
+                cout << "Please enter one valid menu number.\n";
+                continue;
+            }
+
+            if (choice == 0) {
+                cout << "Goodbye.\n";
+                break;
+            }
+
+            if (choice < 1 || choice > static_cast<int>(levels.size())) {
+                cout << "Invalid level choice.\n";
+                continue;
+            }
+
+            playLevel(levels[choice - 1]);
+        }
+    }
+    catch (const exception& error) {
+        cerr << "The game could not start: " << error.what() << '\n';
+        return 1;
+    }
+
+    return 0;
+}
